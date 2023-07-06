@@ -1,0 +1,665 @@
+Компоненты сервиса:
+---------------
+WebSVN - визуальное представление хранилища SVN
+Apache - веб сервер, необходим для работы WebSVN
+Rancid - программа для сбора конфигурация с оборудования
+Subversion (SVN) - система версионного контроля
+Bind9 - DNS сервер (по наименованию оборудования в BIND rancid создает файлы конфигурации)
+Postfix - MTA для отправки уведомлений по почте
+
+
+!=== interfaces ===
+ip addr add 192.168.0.109/24 dev eth0
+! ip addr del 192.168.0.109/24 dev ens32
+! dhclient ens32
+! ip route del default
+! ip route add default via 192.168.43.1
+
+vi /etc/network/interfaces
+! не удалять allow-hotplug ens32
+! проверь какой интефейс используется, в ens32 или eth0
+---
+auto eth0
+   iface ens32 inet static
+       address 192.168.1.110
+       netmask 255.255.255.0
+       gateway 192.168.1.1
+
+!=== Firewall ===
+iptables -vnL
+
+iptables --policy INPUT ACCEPT
+iptables --flush
+iptables -A INPUT --match state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT --protocol icmp --icmp-type any -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -p tcp --dport 80 -j ACCEPT
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+iptables --policy INPUT DROP
+
+iptables -vnL
+
+iptables-save -f /etc/iptables.rules
+
+vi /etc/network/if-pre-up.d/iptables
+---
+#!/bin/sh
+/sbin/iptables-restore < /etc/iptables.rules
+---
+chmod +x /etc/network/if-pre-up.d/iptables
+
+netstat -ant
+
+==== install vmtools ===
+apt install open-vm-tools
+
+mkdir /mnt/cdrom
+mount /dev/cdrom /mnt/cdrom
+cp /mnt/cdrom/VMwareTools-10.3.21-14772444.tar.gz /tmp/
+
+cd /tmp
+tar -zxvf VMwareTools-10.3.21-14772444.tar.gz
+
+cd vmware-tools-distrib
+./vmware-install.pl
+vmware-config-tools.pl -h 2>&amp;1 | grep "VMware Tools"
+
+umount /mnt/cdrom
+! перезапуск не требуется
+
+cd
+rm /tmp/VMwareTools-version.tar.gz
+rm -rf /tmp/vmware-tools-distrib
+
+!=== NTP server ===
+apt install ntp ntpdate
+
+timedatectl list-timezones | grep Asia | tail -n 6
+timedatectl set-timezone Asia/Yekaterinburg
+date --set 2020-11-12
+date --set 13:40:00
+
+vi /etc/ntp.conf
+server 172.11.111.253 ! tacacs2-tumn который на FreeBSD !?
+server 172.11.111.254 ! tacacs1-tumn Debian не отдает время
+restrict default ignore
+restrict 127.0.0.1
+restrict 172.11.111.253 noquery notrap
+restrict 172.11.111.254 noquery notrap
+
+! restrict 10.121.0.0 mask 255.255.0.0 notrust nomodify notrap
+! restrict 172.21.21.0 mask 255.255.240.0 notrust nomodify notrap
+! restrict 172.11.111.0 mask 255.255.0.0 notrust nomodify notrap
+
+service ntp restart
+systemctl enable ntp
+
+ntpq -p
+ntpq -c sysinfo
+ntpq -c sysstats
+ntpq -c associations
+
+vi /etc/default/ntpdate
+закоментировать NTPSERVERS
+ntpdate -q  172.11.111.253
+ntpdate -q  172.11.111.254
+
+
+
+!=== настройка клиента DNS ===
+vi /etc/resolv.conf
+search dns hosts
+nameserver 127.0.0.1
+nameserver 172.22.222.52
+nameserver 172.22.222.53
+
+! nslookup ya.ru
+
+!=== найстрока BIND ===
+https://wiki.debian.org/Bind9#Configuration
+https://www.digitalocean.com/community/tutorials/how-to-configure-bind-as-a-private-network-dns-server-on-debian-9
+
+apt install bind9 bind9utils dnsutils
+! cразу стопнуть  service bind9 stop, настраивать в последню очередь
+
+---
+! файлы конфигурации
+/etc/bind/named.conf - основной файл, все настройки в includes
+/etc/bind/named.conf.local - сюда добавляем свои зоны
+/etc/bind/named.conf.options - настройки
+---
+systemctl reload bind9
+
+
+! 
+vi /etc/bind/named.conf.options
+---
+acl "trusted" {
+        127.0.0.1;
+};
+---
+
+options {
+        directory ......
+
+! ipv6 не слушаем
+---
+        recursion yes;
+        allow-query { trusted; };           
+        allow-recursion { trusted; };
+        allow-transfer { none; };
+        listen-on { 127.0.0.1; };
+        listen-on-v6 { none; };
+        forwarders {
+		172.22.222.52; 
+		172.22.222.53;
+        };
+---
+
+! настраиваем локальные зоны
+vi /etc/bind/named.conf.local
+zone "test.com" {
+          type master;
+          file "/etc/bind/zones/master/test.com";
+};
+
+zone "0.168.192.in-addr.arpa" {
+          type master;
+          file "/etc/bind/zones/master/0.168.192.in-addr.arpa";
+};
+
+l
+! создаем файлы зон
+mkdir /etc/bind/zones
+mkdir /etc/bind/zones/master
+
+! прямая зона
+! ПОМЕНЯЙ IP 172.11.111.190 НА 172.11.111.250 ПОСЛЕ СМЕНЫ IP АДРЕСА!!!
+rancid1-tumn.lab.local. root.rancid1-tumn.lab.local.
+lab.local.
+
+
+vi /etc/bind/zones/master/test.com
+$TTL    604800
+@       IN      SOA     test.com. root.test.com.(
+                              3         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+;
+@       IN      NS      test.com.
+@       IN      A       192.168.0.107
+sw1     IN      A       192.168.0.201
+sw2     IN      A       192.168.0.202
+r1      IN      A       192.168.0.203
+r2      IN      A       192.168.0.204
+
+! обратная зона (7-последний октет IPv4 адреса)
+! меняй serial number после каждого изменения записи !
+vi /etc/bind/zones/master/0.168.192.in-addr.arpa
+@   IN  SOA     test.com. root.test.com.  (
+                              4         ; Serial
+                         604800         ; Refresh
+                          86400         ; Retry
+                        2419200         ; Expire
+                         604800 )       ; Negative Cache TTL
+@    IN  NS      test.com.
+107  IN  PTR     test.com.
+201  IN  PTR     sw1.test.com.
+202  IN  PTR     sw2.test.com.
+203  IN  PTR     r1.test.com.
+204  IN  PTR     r2.test.com.
+
+! логи dns сервера
+! включена защита AppArmor, чтобы не возиться с доступом, лучше сделать так
+! /etc/apparmor.d/usr.sbin.named
+
+mkdir /var/log/named/
+chown -R bind:bind /var/log/named/
+
+vi /etc/bind/named.conf
+logging {
+          channel "misc" {
+                    file "/var/log/named/misc.log" versions 4 size 4m;
+                    print-time YES;
+                    print-severity YES;
+                    print-category YES;
+          };
+  
+          channel "query" {
+                    file "/var/log/named/query.log" versions 4 size 4m;
+                    print-time YES;
+                    print-severity NO;
+                    print-category NO;
+          };
+  
+          category default {
+                    "misc";
+          };
+  
+          category queries {
+                    "query";
+          };
+};
+
+netstat -ant
+service bind9 status | stop | start | restart
+service bind9 stop 
+service bind9 start
+service bind9 restart
+rndc reload 
+
+!=== найстрока Apache+WebSVN ===
+---
+/etc/apache2 - файлы конфигурации
+/var/www/html/ - веб страницы
+/var/log/apache2 - логи
+/etc/apache2/mods-enabled - модули php (FilesMatch...) и ssl включаются и настраиваются тут
+/etc/apache2/ports.conf - какие порты слушаем
+/etc/apache2/sites-enabled - настройки виртуальных хостов
+---
+
+apt install apache2 libapache2-mod-php php-xml enscript php-geshi
+apt install subversion
+
+cd ~
+wget https://github.com/websvnphp/websvn/archive/2.6.0.tar.gz
+tar xzvpf 2.6.0.tar.gz
+cp -r websvn-2.6.0 /var/www/html/websvn
+
+cd /var/www/html/websvn/include/
+cp /var/www/html/websvn/include/distconfig.php config.php
+
+! отредактировать файл конфигурации websvn
+vi /var/www/html/websvn/include/config.php
+---
+$config->addRepository('TRDU config backup repository', 'file:///var/lib/rancid/SVN' , 'rancid');
+$config->parentPath('/var/lib/rancid/SVN', 'rancid');
+$config->allowDownload();
+$config->setMinDownloadLevel(2);
+$config->useEnscript();
+$extEnscript['.ru'] = 'pascal';
+---
+
+! пароль на доступ к websvn
+htpasswd -c /home/rancid/websvn.passwd admin
+
+! временный сертификат ssl (если есть, устанавливаем свой)
+openssl req -new > new.ssl.csr
+openssl rsa -in privkey.pem -out new.cert.key
+openssl x509 -in new.ssl.csr -out new.cert.cert -req -signkey new.cert.key -days 365
+cp new.cert.cert /etc/ssl/certs/server.crt
+cp new.cert.key /etc/ssl/private/server.key
+chmod 0600 /etc/ssl/private/server.key
+
+!cp /home/user/rancid1-tumn.crt /etc/ssl/certs/rancid1-tumn.crt
+!cp /home/user/rancid1-tumn.key /etc/ssl/private/rancid1-tumn.key
+!chmod 0600 /etc/ssl/private/rancid1-tumn.key
+   	SSLCertificateFile "/etc/ssl/certs/rancid1-tumn.crt"
+    	SSLCertificateKeyFile "/etc/ssl/private/rancid1-tumn.key"
+
+
+! subject=C = RU, ST = XMAO, L = Surgut, O = System Operator of the Unified Energy System, OU = RDM of Tumen, CN = " rancid1-tumn.oduur.so", emailAddress = thleo@@lab.local
+
+a2enmod ssl
+systemctl restart apache2
+a2enmod rewrite
+!a2dismod rewrite
+systemctl restart apache2
+
+! будет работать старая ссылка *.*.*.*/websvn
+vi /etc/apache2/sites-enabled/websvn.conf
+---
+<VirtualHost *:443>
+        ServerName default
+        DocumentRoot "/var/www/html"
+	ErrorLog ${APACHE_LOG_DIR}/error.log
+        CustomLog ${APACHE_LOG_DIR}/access.log combined
+   	SSLEngine on
+   	SSLCertificateFile "/etc/ssl/certs/server.crt"
+    	SSLCertificateKeyFile "/etc/ssl/private/server.key"
+	SSLCipherSuite HIGH:!aNULL:!MD5
+        <Location /websvn>
+                AuthType Basic
+                AuthName "Enter login and password"
+                AuthUserFile /home/rancid/websvn.passwd
+                Require valid-user
+        </Location>
+</VirtualHost>
+---
+
+! используем только https
+vi /etc/apache2/sites-enabled/000-default.conf
+---
+<VirtualHost *:80>
+    ServerName default
+    RewriteEngine On
+    RewriteCond %{HTTPS} off
+    RewriteRule (.*) https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+</VirtualHost>
+---
+
+vi /var/www/html/.htaccess
+RewriteCond %{SERVER_PORT} ^80$
+RewriteRule ^.*$ https://%{SERVER_NAME}%{REQUEST_URI} [R=301,L]
+
+
+! проверяем корректность настроек в apache
+apachectl configtest
+apachectl graceful
+
+! заменить /var/www/html/index.html на свою заглушку
+
+!=== найстрока rancid ===
+---
+/etc/rancid/rancid.conf - файл конфигурации
+/var/lib/rancid/ - папки устройств
+/var/log/rancid/ - логи
+/usr/lib/rancid/bin - бинарники
+---
+su -l
+adduser rancid
+! userdel -r rancid
+usermod -a -G rancid www-data
+!gpasswd -d www-data rancid
+service apache2 restart
+
+apt install rancid
+cp /etc/rancid/rancid.conf /etc/rancid/rancid.conf.ORIGINAL
+
+vi /etc/rancid/rancid.conf
+---
+CVSROOT=$BASEDIR/SVN; export CVSROOT
+RCSSYS=svn; export RCSSYS
+LIST_OF_GROUPS="archive switches routers firewall misc"
+---
+
+! создаем необходимую структуру каталогов для устройств
+chown -R rancid:rancid /var/lib/rancid/
+chown -R rancid:rancid /var/log/rancid
+
+su - rancid
+/var/lib/rancid/bin/rancid-cvs
+
+chown -R rancid:rancid /var/lib/rancid/
+! chmod -R g+r *.*  -WTF?
+
+! UR-Tumn-sw2960-lan-22
+! 172.11.111.22
+
+! добавить устройства .db
+cd /var/lib/rancid/switches/
+vi router.db
+! replace in vi
+! :g/:/s//;/g
+---
+ur-tumn-sw2960-lan-22.lab.local;cisco;up
+r1.test.com;cisco;up
+r2.test.com;cisco;up
+---
+
+! добавить устройства в cloginrc
+vi /home/rancid/.cloginrc
+---
+add password 172.11.111.22 cisco cisco
+add user 172.11.111.22 user1
+! add cyphertype <devicename> aes256-cbc
+---
+
+chmod 600 /home/rancid/.cloginrc
+chown rancid:rancid /home/rancid/.cloginrc
+
+! добавить в DNS
+/etc/namedb/master/lab.local.db  
+/etc/namedb/master/x.x.x.in-addr.arpa
+
+****************
+На старых коммутаторах используются старые криптоалгоритмы, SSH из коробки не работает, 
+неоходимо явно включить менее стойкие шифры...
+key exchange: diffie-hellman-group1-sha1
+cipher: aes128-cbc,3des-cbc,aes192-cbc,aes256-cbc
+172.11.111.*
+172.22.222.*
+172.25.5.* - МСС
+172.21.143.* - фаерволы, МСС
+
+!
+ssh 172.11.111.22 -c aes256-cbc -oKexAlgorithms=diffie-hellman-group1-sha1
+
+! посмотреть, что включено в sshd
+sshd -T | grep ciphers
+sshd -T | grep kexalgorithms
+
+cp /etc/ssh/ssh_config /etc/ssh/ssh_config.backup
+!cp /etc/ssh/ssh_config.backup /etc/ssh/ssh_config 
+
+vi /etc/ssh/ssh_config
+! по домену
+---
+Host *.lab.local
+       GSSAPIAuthentication yes
+       KexAlgorithms +diffie-hellman-group1-sha1
+       Ciphers +aes256-cbc
+---
+! по подсети
+Host 172.11.111.*
+       GSSAPIAuthentication yes
+       KexAlgorithms +diffie-hellman-group1-sha1
+       Ciphers +aes256-cbc
+---
+! НЕ ИСПОЛЬЗОВАТЬ
+Host 172.11.111.*
+       GSSAPIAuthentication yes
+       KexAlgorithms diffie-hellman-group1-sha1,curve25519-sha256@libssh.org,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521,diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha1
+       Ciphers 3des-cbc,blowfish-cbc,aes128-cbc,aes128-ctr,aes256-ctr
+---
+! текущую сессию не обрывает
+ssh-keygen -A
+! service sshd restart
+
+! проверить соединение (ACL на устройствах)
+su rancid  -c "/var/lib/rancid/bin/clogin 172.11.111.22"
+su rancid  -c "/var/lib/rancid/bin/clogin sw1.test.com"
+! su - rancid
+! /var/lib/rancid/bin/clogin -t 90 -c "show version" ur-tumn-sw3012-rdc-dc-11.lab.local
+! /var/lib/rancid/bin/clogin -t 90 -c "show version" UR-Tumn-sw3012-dc-12.lab.local
+
+ssh -v ur-tumn-sw3012-rdc-dc-11.lab.local
+
+! su - rancid
+! /var/lib/rancid/bin/clogin -t 90 -c "show version" 172.11.111.22
+
+
+! удалить старый файл
+rm /home/rancid/.ssh/
+
+! тестовый запуск
+cd /var/log/rancid/
+! rm *
+
+su rancid -c rancid-run
+cd /var/lib/rancid/switches/configs
+svn log
+! rancdi logs
+
+
+***** migration svn rancid ***** 
+! FreeBSD
+cd ~
+svnadmin dump /usr/local/var/rancid/CVS > ~/repo.dump
+scp repo.dump user@172.11.111.190:/home/user
+cd /usr/home/rancid
+scp .cloginrc user@172.11.111.190:/home/user
+
+cp .cloginrc /home/rancid/
+chmod 600 /home/rancid/.cloginrc
+chown rancid:rancid /home/rancid/.cloginrc
+
+! Debian
+!cd /var/lib/rancid/- стирать папки по отдельности, там еще BIN !
+!rm -R * - стирать папки по отдельности, там еще BIN !
+!apt install rancid --reinstall
+
+svnadmin create /var/lib/rancid/SVN
+svnadmin load /var/lib/rancid/SVN < /home/user/repo.dump ! <-- 5-10 мин даже на мощной системе
+
+! отключи postfix, чтобы не было спама
+chown -R rancid:rancid /var/lib/rancid/SVN
+su - rancid
+/var/lib/rancid/bin/rancid-cvs
+
+! копирование папки
+scp -r user@ssh.example.com:/path/to/remote/source /path/to/local/destination
+scp -r /path/to/local/source user@ssh.example.com:/path/to/remote/destination 
+*****
+
+!--- автозапуск ranicd, настраивать из под учетки rancid ---
+su - rancid
+crontab -e
+! m h  dom mon dow   command (*/6 - каждые 6-ть часов..)
+# Check configurations devices
+30 00 * * * /usr/bin/rancid-run
+# Daily Clean Up of Diff Files
+15 00 * * * /usr/bin/find /var/log/rancid -type f -mtime +30 -exec rm {} \;
+
+crontab -l
+ps aux | grep cron
+
+!!!!!!!!!!!!
+! уведомление по почте
+! postfix
+https://habr.com/ru/company/ruvds/blog/325356/
+
+https://serverfault.com/questions/744761/postfix-aliases-will-be-ignored
+*MTA — агент пересылки электронной почты (сервер электронной почты)
+
+apt install postfix mailutils
+service postfix stop 
+
+cp /etc/postfix/main.cf{,.orig}
+
+vi /etc/postfix/main.cf
+myhostname = rancid1-tumn.lab.local
+myorigin = $mydomain
+mydomain = lab.local
+mydestination = $myhostname, localhost.$mydomain, $mydomain
+mynetworks = 127.0.0.0/8
+inet_interfaces = loopback-only
+inet_protocols = ipv4
+smtp_generic_maps = hash:/etc/postfix/generic
+
+vi /etc/postfix/generic
+root@lab.local rancid1-tumn@lab.local
+
+postmap /etc/postfix/generic
+
+systemctl restart postfix
+service postfix start
+
+netstat -ant
+netstat -tlpn
+
+! postconf mydestination
+
+vi /etc/aliases
+---
+rancid-admin-routers:           thleo@lab.local,mark@lab.local
+rancid-admin-switches:          thleo@lab.local,mark@lab.local
+rancid-admin-firewall:          thleo@lab.local,mark@lab.local
+rancid-admin-misc:              thleo@lab.local,mark@lab.local
+rancid-routers:                 thleo@lab.local,shulz@lab.local,mark@lab.local
+rancid-switches:                thleo@lab.local,shulz@lab.local,mark@lab.local
+rancid-firewall:                thleo@lab.local,shulz@lab.local,mark@lab.local
+rancid-misc:                    thleo@lab.local,shulz@lab.local,mark@lab.local
+---
+postalias hash:/etc/aliases
+! newaliases - если не работает
+postfix reload
+
+! замена почтового адреса отправителя
+! rancid@localdomain --> rancid1-tumn@lab.local
+cat /etc/postfix/main.cf | grep smtp_generic_maps
+!smtp_generic_maps = hash:/etc/postfix/generic
+
+vi /etc/postfix/generic
+---
+rancid@localdomain rancid1-tumn@lab.local
+!user@localdomain.local      account@isp.example.com
+!@localdomain.local          wholedomain@isp.example.com
+---
+
+postmap /etc/postfix/generic
+/etc/init.d/postfix reload
+
+
+! тест почты
+echo "Hello from NEW rancid2" | mail -s "Test the main system" thleo@lab.local
+
+
+===================
+apt list --installed | grep exim
+du -sh /home/AAA ! размер директории
+lsb_release -a
+
+=== Переключение rancid1-tumn на tyu-rancid ===
+1. Поменять ip в конфигурации интерфейсов на tyu-rancid
+cp /etc/network/interfaces ~/interfaces_backup
+
+vi /etc/network/interfaces
+        address 172.11.111.250/24
+
++2. Поменять адреса в прямой зоне DNS (сервер локальный!), не копировать, менять в ручную!
+! ПОМЕНЯТЬ СЕРИЙНЫЙ НОМЕР !
+vi /etc/bind/zones/master/lab.local.db
+rancid1-tumn                    IN      A       172.11.111.250
+
+cat /etc/bind/zones/master/lab.local.db | grep 250
+
++3. Поменять адреса в обратной зоне DNS (сервер локальный!), не копировать, менять в ручную!
+! ПОМЕНЯТЬ СЕРИЙНЫЙ НОМЕР !
+vi /etc/bind/zones/master/138.21.172.in-addr.arpa
+250             IN      PTR     rancid1-tumn.lab.local.
+
+cat /etc/bind/zones/master/138.21.172.in-addr.arpa | grep 250
+
+4. Поставить на мониторинг ip адрес 172.11.111.250
+ping -t 172.11.111.250
+
+5. Отключить старый rancid1-tumn 172.11.111.250 от коммутатора в esxi
+- убедиться, что пропал ping
+
+6. Перезагрузить новый tyu-rancid
+shutdown -r now
+
+7. Проверить доступность и работоспосбность всех сервисов
+
+8. Запустить тестовый сбор конфигураций 
+- проверить логи
+
+===============================
+Разное шифрование в разных направления (ACL ssh)
+====
+rancid -->sw2960-lan-2
+
+root@tyu-rancid:~# ssh -v ur-tumn-sw2960-lan-22.lab.local
+debug1: Authenticating to ur-tumn-sw2960-lan-22.lab.local:22 as 'root'
+debug1: SSH2_MSG_KEXINIT sent
+debug1: SSH2_MSG_KEXINIT received
+debug1: kex: algorithm: diffie-hellman-group1-sha1
+debug1: kex: host key algorithm: ssh-rsa
+debug1: kex: server->client cipher: aes256-cbc MAC: hmac-sha1 compression: none
+debug1: kex: client->server cipher: aes256-cbc MAC: hmac-sha1 compression: none
+
+====
+ssh ПК -->rancid
+
+debug1: match: OpenSSH_7.9p1 Debian-10+deb10u2 pat OpenSSH* compat 0x04000000
+debug1: Authenticating to 172.11.111.250:22 as 'user'
+debug1: kex: algorithm: curve25519-sha256
+debug1: kex: host key algorithm: ecdsa-sha2-nistp256
+debug1: kex: server->client cipher: chacha20-poly1305@openssh.com MAC: <implicit> compression: none
+debug1: kex: client->server cipher: chacha20-poly1305@openssh.com MAC: <implicit> compression: none
+debug1: expecting SSH2_MSG_KEX_ECDH_REPLY
+debug1: Server host key: ecdsa-sha2-nistp256 SHA256:vWzy9LTccduDoKF1wSGfoZSOpe5LrEjuO2Qq1AbRhDM

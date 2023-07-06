@@ -1,0 +1,1076 @@
+https://www.shrubbery.net/tac_plus/ - пакет больше не поддерживается и исключен из дистрибутива Debian 11.
+
+tacacs - существует две наиболее распространненые реализации:
+
+https://www.pro-bono-publico.de/projects/tac_plus.html
+ - из коробки поддерживает PAM, LDAP
+ - поддерживает PAM для enable
+ - необходимо собирать из исходников
+ - bug fix через http://groups.google.com/group/event-driven-servers
+ - версия от 08.12.2020
+
+https://www.shrubbery.net/tac_plus/
+ - из коробки поддерживает PAM
+ - не поддерживает PAM для enable (только общий пароль на группу)
+ - по умолчания используются в Debian
+ - bug fix через Debian security или tac_plus@shrubbery.net
+ - версия 4.0.4.27a-3 от 2013 года
+ - ИСКЛЮЧЕНА из Debian 11 !!!
+
+
+Winbind – это демон («служба» в терминах Windows), работающий на клиентах Samba и действующий 
+как прокси для связи между PAM и NSS, работающими на компьютере Linux, с одной стороны, 
+и Active Directory, работающей на контроллере домена, с другой. 
+В частности, Winbind использует Kerberos для проверки подлинности с помощью Active Directory 
+и LDAP для получения информации о пользователях и группах. 
+
+Как работает:
+user --> cisco_device (TACACS+) --> Server (tacacs --> PAM --> winbind --> kerberos) --> AD
+
+!=== interfaces ===
+vi /etc/network/interfaces
+! не удалять allow-hotplug ens32
+! проверь какой интефейс используется, в ens32 или eth0
+auto ens33 
+iface ens33 inet static
+   address 192.168.1.110
+   netmask 255.255.255.0
+   gateway 192.168.1.1
+
+shutdown -r now
+! ifdown eth0
+! ifup eth0
+
+!=== Firewall ===
+! tacacs-49, ntp-123, syslog-514udp, syslog-tls-6514tcp/udp/dccp
+iptables -vnL
+
+iptables --policy INPUT ACCEPT
+iptables --flush
+iptables -A INPUT --match state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT --protocol icmp --icmp-type any -j ACCEPT
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -p tcp --dport 49 -j ACCEPT
+iptables -A INPUT -p udp --dport 123 -j ACCEPT
+iptables -A INPUT -p tcp --dport 514 -j ACCEPT
+iptables -A INPUT -p udp --dport 514 -j ACCEPT
+iptables --policy INPUT DROP
+
+iptables -vnL
+
+iptables-save -f /etc/iptables.rules
+
+vi /etc/network/if-pre-up.d/iptables
+---
+#!/bin/sh
+/sbin/iptables-restore < /etc/iptables.rules
+---
+chmod +x /etc/network/if-pre-up.d/iptables
+
+apt install net-tools dnsutils
+netstat -ant (только tcp)
+netstat -ltp
+netstat -an
+
+!=== NTP server ===
+apt install ntp ntpdate
+
+timedatectl list-timezones | grep Asia | tail -n 6
+timedatectl set-timezone Asia/Yekaterinburg
+date --set 2021-01-15
+date --set 23:03:00
+
+vi /etc/ntp.conf
+server ***
+restrict default ignore
+restrict 127.0.0.1
+restrict 172.21.138.253 noquery notrap
+restrict 172.21.138.254 noquery notrap
+
+! Явно ограничить доступ из подсетей
+! restrict 10.121.0.0 mask 255.255.0.0 notrust nomodify notrap
+! restrict 172.21.128.0 mask 255.255.240.0 notrust nomodify notrap
+! restrict 172.21.138.0 mask 255.255.0.0 notrust nomodify notrap
+
+service ntp restart
+systemctl enable ntp
+
+ntpq -p
+ntpq -c sysinfo
+ntpq -c sysstats
+ntpq -c associations
+
+vi /etc/default/ntpdate
+закоментировать NTPSERVERS
+ntpdate -q  172.21.138.253
+ntpdate -q  172.21.138.254
+
+
+!=== syslog ===
+Syslog  - 1980
+syslog-ng  - 1998 <-- use this
+Rsyslog - 2004
+
+syslog-ng started from scratch (with a different config format) while rsyslog was originally a fork of syslogd, supporting and extending its syntax. 
+In recent years, rsyslog started supporting a newer config format as well. 
+
+https://wiki.debian.org/DebianEdu/HowTo/syslog-ng
+http://feanor184.ru/linux/rsyslog-i-loganalyzer-podnimaem-server-logirovaniya-na-linux.html
+https://www.k-max.name/linux/rsyslog-na-debian-nastrojka-servera/
+https://habr.com/ru/post/213519/ - log analyzer (monodb)
+Связка rsyslog+logstash+elasticsearch+kibana решила эти две проблемы.
+
+https://wiki.debian.org/Rsyslog
+
+
+0 – Emergency (emerg)
+1 – Alerts (alert)
+2 – Critical (crit)
+3 – Errors (err)
+4 – Warnings (warn)
+5 – Notification (notice)
+6 – Information (info)
+7 – Debug (debug) 
+
+facilities:
+auth – сообщения аутентификации (логин)
+cron – сообщения из памяти резидентного планировщика
+daemon – сообщения от резидентов демонов
+kern – сообщения ядра
+lpr – сообщения принтера (использывание JetDirect карты)
+mail – сообщения от Sendmail
+user – сообщения от пользователя инициировавшего процессы/приложения
+local0–local7 – определяемый пользователем (см ниже)
+syslog – сообщения от самого процесса системного журнала
+
+# настройки ротации логов
+/etc/logrotate.d/rsyslog
+! ротация логов
+/etc/logrotate.conf
+
+
+apt install syslog-ng - будет удален сервер логирования rsyslog, который установлен в системе по-умолчанию
+/etc/syslog-ng/syslog-ng.conf - основной файл конфигурации (системные настройки)
+
+! создать каталоги для логов
+mkdir -p /var/log/cisco/{router,firewall,switch,misc}
+chmod -R 0644 /var/log/cisco/
+
+! только опции
+vi /etc/syslog-ng/syslog-ng.conf
+use_dns(yes); use_fqdn(yes);
+
+	logging facility 23 (local7)
+! создать отдельный файл конфигурации
+vi /etc/syslog-ng/conf.d/cisco.conf
+---
+########################
+# Sources
+########################
+source s_ip {
+	tcp(ip(0.0.0.0) port(514)); 
+	udp(ip(0.0.0.0) port(514));
+};
+
+########################
+# Destinations
+########################
+destination d_local4 { file("/var/log/cisco/router/routers.log" perm(0644)); };
+destination d_local5 { file("/var/log/cisco/switch/switches.log" perm(0644)); };
+destination d_local7 { file("/var/log/cisco/firewall/asa.log" perm(0644)); };
+destination d_host4 { file("/var/log/cisco/router/${FULLHOST}.log" perm(0644)); };
+destination d_host5 { file("/var/log/cisco/switch/${FULLHOST}.log" perm(0644)); };
+destination d_host7 { file("/var/log/cisco/firewall/${FULLHOST}.log" perm(0644)); };
+
+########################
+# Filters
+########################
+filter f_local4 { facility(local4); };
+filter f_local5 { facility(local5); };
+filter f_local7 { facility(local7); };
+
+########################
+# Log paths
+########################
+log { source(s_ip); filter(f_local4); destination(d_local4); destination(d_host4); };
+log { source(s_ip); filter(f_local5); destination(d_local5); destination(d_host5); };
+log { source(s_ip); filter(f_local7); destination(d_local7); destination(d_host7); };
+---
+
+/etc/init.d/syslog-ng restart
+netstat -ant
+
+! НЕ ВКЛЮЧАТЬ В ПРОДАКШЕНЕ
+!debug
+syslog-ng-ctl verbose --set=on
+syslog-ng-ctl verbose --set=off
+cat /var/log/messages | grep syslog-ng
+
+syslog-ng-ctl debug --set=on
+syslog-ng-ctl debug --set=off
+cat /var/log/debug | grep syslog-ng
+
+!=== tacacs ===!
+https://habr.com/ru/post/217669/
+https://www.cisco.com/c/ru_ru/support/docs/security-vpn/terminal-access-controller-access-control-system-tacacs-/13865-tacplus.html
+https://www.gsp.com/cgi-bin/man.cgi?section=5&topic=tac_plus.conf
+https://serverfault.com/questions/425020/authenticate-linux-sshd-with-tacacs-cisco-acs
+http://www.stben.net/tacacs/users_guide.html
+
+https://www.networkworld.com/article/3218728/how-log-rotation-works-with-logrotate.html
+
+
+apt install tacacs+
+
+! Опции демона
+vi /etc/default/tacacs+
+! DAEMON_OPTS=
+service tacacs_plus start
+
+! основной файл конфигурации
+! Явно ограничить доступ из подсетей
+mkdir -p /var/log/cisco/commands
+chmod -R 0644 /var/log/cisco/commands
+
+
+
+! ПЕРЕНСТИ КОНФИГ С FreeBSD (НИЖЕ конфиг для ТЕСТА!)
+*****************************
+PAM can be used  only for  login  authentication,  it  is  not	implemented for	enable authorization, 
+and does not support  OTP-like  challenge system (ie: no additional  prompting).
+The daemon must be built with PAM support, which is included by	default	if libpam is found.
+*****************************
+default <permission> for service authorization.
+enable = PAM - не работает !
+
+! генерация шифрованного пароля (пароли в конфиге в ЗАШИФРОВАННОМ виде)
+tac_pwd
+
+vi /etc/tacacs+/tac_plus.conf
+---
+accounting file = /var/log/cisco/commands/commands.log
+
+key = test123
+
+acl = block-access {
+ deny = .*
+}
+
+group = admins {
+ default service = permit
+ enable = des yfVvyZ1MIGBVE
+ service = exec {
+  priv-lvl = 15
+ }
+}
+
+group = support {
+ default service = deny
+ service = exec {
+  priv-lvl = 15
+ }
+ cmd = show { 
+  permit ".*"
+ }
+ cmd = exit { 
+  permit ".*" 
+ }
+ cmd = logout { 
+  permit ".*" 
+ }
+ cmd = terminal { 
+  permit ".*" 
+ }
+ cmd = dir { 
+  permit ".*" 
+ }
+ cmd = more { 
+  permit ".*" 
+ }
+}
+
+group = newcomer {
+ default service = deny
+ service = exec {
+  priv-lvl = 1
+ }
+ cmd = show { 
+  permit ".*"
+ }
+ cmd = exit { 
+  permit ".*" 
+ }
+ cmd = logout { 
+  permit ".*" 
+ }
+}
+
+group = rancid {
+ default service = deny
+ enable = des yfVvyZ1MIGBVE
+ service = exec {
+  priv-lvl = 15
+ }
+ cmd = show { 
+  permit ".*"
+ }
+ cmd = enable { 
+  permit ".*" 
+ }
+ cmd = exit { 
+  permit ".*" 
+ }
+ cmd = logout { 
+  permit ".*" 
+ }
+ cmd = terminal { 
+  permit ".*" 
+ }
+ cmd = dir { 
+  permit ".*" 
+ }
+ cmd = more { 
+  permit ".*" 
+ }
+ cmd = write { 
+  permit "terminal"
+  deny ".*"
+ }
+}
+
+user=lab.local\rancid-tumn {
+ member = rancid
+ login = PAM
+}
+
+user=LAB\user1 {
+ member = admins
+ login = PAM
+}
+
+#user = $enab15$ {
+# login = des 123
+#}
+
+---
+! chmod o-r /etc/tacacs+/tac_plus.conf - пока не надо
+service tacacs_plus reload
+
+systemctl status tacacs_plus
+
+lsof -i :49
+netstat -ltp | grep tac
+netstat -ant
+
+
+!=== winbindd ===!
+apt install krb5-user samba winbind
+apt install libpam-krb5 libpam-winbind libnss-winbind
+
+vi /etc/resolv.conf
+---
+! domain domain.com
+! search domain.com
+nameserver 192.168.0.1
+nameserver 192.168.0.2
+---
+
+! vi /etc/hosts
+
+! тест DC
+ping dc1.lab.local
+! ping dc1.lab.local
+
+! синхронизацию времени с доменконтроллером
+net time set dc1.lab.local
+! net time set -S dc1.lab.local
+ /etc/init.d/winbind restart
+
+vi /etc/krb5.conf
+---
+[logging]
+default = FILE:/var/log/krb5libs.log
+kdc = FILE:/var/log/krb5kdc.log
+admin_server = FILE:/var/log/kadmind.log
+
+[libdefaults]
+default_realm = lab.local
+dns_lookup_realm = false
+dns_lookup_kdc = false
+ticket_lifetime = 24h
+forwardable = yes
+
+[realms]
+lab.local = {
+  kdc = dc1.lab.local dc2.lab.local
+  default_domain = lab.local
+  }
+
+[domain_realm]
+  .lab.local = lab.local
+---
+/etc/init.d/winbind restart
+
+
+! проверить DNS, должны резолвиться служебные записи (в kerbors, все прописано, будет работать и без srv записей)
+dig -t srv dc1.lab.local
+
+! Авторизоваться в домене, проверить, что kerberos отдает билет
+kinit username@DOMAIN.COM
+! kinit -p thleo@LAB.LOCAL
+! kinit -p thleo@lab.local
+kinit -p thleo
+
+! Убедиться в том, что билет получен
+klist
+
+! Удалить все билеты
+kdestroy
+
+**************
+Начиная с третьей версии, Samba может являться полноценным клиентом домена Active Directory.
+Центр распределения ключей (Key Distribution Center, KDC)
+Samba --> winbindd --> методы поиска NSS --> PAM
+Samba services are implemented as two daemons: 
+    smbd, which provides the file and printer sharing services, and
+    nmbd, which provides the NetBIOS-to-IP-address name service. NetBIOS over TCP/IP requires some method for mapping NetBIOS computer names to the IP addresses of a TCP/IP network.
+    winbindd - отдельный демон
+
+ps ax | egrep "samba|smbd|nmbd|winbindd"
+**************
+
+!!! проверить реальный smb.conf
+vi /etc/samba/smb.conf
+!добавить в секцию [global] следующие строки: 
+--
+security = ADS
+workgroup = lab.local
+realm = lab.local
+
+log file = /var/log/samba/%m.log
+log level = 1
+
+winbind offline logon = yes
+winbind cache time = 300
+
+idmap config * : backend = tdb
+idmap config * : range = 3000-7999
+idmap config lab.local : backend = rid
+idmap config lab.local : range = 10000-999999
+template shell = /bin/false
+
+disable netbios = yes
+
+kerberos method = secrets and keytab
+
+# если будут задержки, попробовать это
+# password server = dc1.lab.local
+---
+! smbcontrol all reload-config
+
+! ЯВНО задаем конфигурацию winbind
+vi /etc/security/pam_winbind.conf
+---
+[global]
+  debug = no
+  cached_login = yes
+  krb5_auth = yes
+  krb5_ccache_type = FILE
+  ;require_membership_of =
+  silent = yes
+---
+
+/etc/init.d/winbind stop
+smbd restart
+/etc/init.d/winbind start
+systemctl status smbd
+systemctl status winbind
+
+! ulimit -n 16384
+vi /etc/security/limits.conf
+*                -       nofile          16384
+
+! reload
+shutdown -r now
+
+! проверить, что нет ошибок на samba
+testparm
+
+! состояние нашего домена и нашего сервера в домене.
+net ads info
+
+! включить наш сервер в домен
+net ads join -U Administrator
+! net ads join -U thleo
+net ads leave -U thleo
+net ads join -U thleo -S dc1
+
+
+! состояние нашего сервера в домене
+! net ads status -U Administrator
+! net ads status -U  thleo
+
+! список пользователей домена
+net ads user -U Administrator
+! net ads user -U  thleo
+
+! проверить, что winbind установил доверительные отношения с AD
+wbinfo -t
+
+! список пользователей и группы из AD
+wbinfo -u
+wbinfo -g
+
+wbinfo -D LAB
+
+! БЛОК С NSS можно пропустить, данный функционал не используется !
+=========NSS===========
+! Do not add the winbind entry to the NSS shadow database. This can cause the wbinfo utility fail.
+! для прозрачной работы ОС с пользователями домена
+vi /etc/nsswitch.conf 
+! edit 
+---
+passwd:         files winbind
+group:          files winbind
+shadow:         files
+gshadow:        files
+---
+
+! ln -s /usr/local/samba/lib/libnss_winbind.so.2 /lib/x86_64-linux-gnu/
+ln -s /lib/x86_64-linux-gnu/libnss_winbind.so.2 /lib/x86_64-linux-gnu/libnss_winbind.so
+ldconfig
+
+! проверить, что ОС запрашивает winbind
+! должны быть установлены libnss-winbind libpam-winbind
+Ищем где хранится кеш
+find / -name *idmap.tdb
+/var/lib/samba/winbindd_idmap.tdb
+
+Очищаем
+/etc/init.d/winbind stop
+rm /var/lib/samba/winbindd_idmap.tdb
+/etc/init.d/winbind restart
+
+getent passwd
+getent group 
+==================
+
+! настраиваем tacas только на использование AD
+vi /etc/pam.d/tac_plus
+auth		required	pam_winbind.so krb5_auth cached_login try_first_pass
+
+
+! ЗАПРЕЩАЕМ подключаться к серверу tacasc всем пользователям из домена (через winbind)
+vi /etc/pam.d/common-auth
+# here are the per-package modules (the "Primary" block)
+#auth   [success=3 default=ignore]      pam_krb5.so minimum_uid=1000
+#auth   [success=2 default=ignore]      pam_unix.so nullok_secure try_first_pass
+auth   [success=1 default=ignore]      pam_unix.so nullok_secure
+#auth   [success=1 default=ignore]      pam_winbind.so krb5_auth krb5_ccache_type=FILE cached_login try_first_pass
+
+
+
+! отключаем SAMBA, нам нужен только winbind
+service smbd stop
+service nmbd stop
+systemctl disable smbd
+systemctl disable nmbd
+!systemctl enable smbd
+!systemctl enable nmbd
+
+shutdown -r now
+
+ps ax | egrep "samba|smbd|nmbd|winbindd"
+netstat -an
+netstat -lp
+
+!=== postfix === 
+apt install postfix mailutils
+service postfix stop 
+
+cp /etc/postfix/main.cf{,.orig}
+
+vi /etc/postfix/main.cf
+myhostname = tyu-tacacs1.tumrdu.so-ups.ru
+myorigin = $mydomain
+mydomain = tumrdu.so-ups.ru
+mydestination = $myhostname, localhost.$mydomain, $mydomain
+mynetworks = 127.0.0.0/8
+inet_interfaces = loopback-only
+inet_protocols = ipv4
+smtp_generic_maps = hash:/etc/postfix/generic
+
+service postfix restart
+
+vi /etc/postfix/generic
+root@tumrdu.so-ups.ru tyu-tacacs1.tumrdu.so-ups.ru
+
+postmap /etc/postfix/generic
+
+systemctl restart postfix
+service postfix start
+
+netstat -ant
+netstat -tlpn
+
+! postconf mydestination
+vi /etc/aliases
+---
+rancid-admin-routers:           Leontyev-AS@tumrdu.so-ups.ru,marchenkofv@tumrdu.so-ups.ru
+rancid-admin-switches:          Leontyev-AS@tumrdu.so-ups.ru,marchenkofv@tumrdu.so-ups.ru
+rancid-admin-firewall:          Leontyev-AS@tumrdu.so-ups.ru,marchenkofv@tumrdu.so-ups.ru
+---
+postalias hash:/etc/aliases
+! newaliases - если не работает
+postfix reload
+
+! замена почтового адреса отправителя
+! rancid@localdomain --> rancid1-tumn@tumrdu.so-ups.ru
+cat /etc/postfix/main.cf | grep smtp_generic_maps
+!smtp_generic_maps = hash:/etc/postfix/generic
+
+vi /etc/postfix/generic
+---
+rancid@localdomain rancid1-tumn@tumrdu.so-ups.ru
+!user@localdomain.local      account@isp.example.com
+!@localdomain.local          wholedomain@isp.example.com
+---
+
+postmap /etc/postfix/generic
+/etc/init.d/postfix reload
+
+! тест почты
+echo "Hello from NEW rancid2" | mail -s "Test the main system" Leontyev-AS@tumrdu.so-ups.ru
+
+
+*******************************************************
+==== SECURITY TEST =====
+! пользователь в домене и tacacas (ЕСТЬ ДОСТУП)
+ssh LAB\user1@cisco-device
+
+! пользователя НЕТ в домене, но есть в tacacs (НЕТ ДОСТУПА)
+ssh LAB\user1@cisco-device
+
+! пользователь есть в домене, но нет в tacacs (НЕТ ДОСТУПА)
+ssh LAB\user1@cisco-device
+
+! пользователь есть в домене, но нет локальной учетной записа (НЕТ ДОСТУПА)
+ssh LAB\user1@SERVER-TACACS1
+ssh LAB\user1@SERVER-TACACS1
+
+! netbios должен быть отключен
+ps ax | egrep "samba|smbd|nmbd|winbindd"
+
+==================================
+! для тестирования коммутаторов/маршрутизаторов
+conf t
+tacacs-server host 192.168.1.110
+tacacs-server key test123
+aaa new-model
+aaa authentication login default group tacacs+ local none
+aaa authentication enable default group tacacs+ enable
+
+aaa authorization exec default group tacacs+ local none
+aaa authorization commands 0 default group tacacs+ local none
+aaa authorization commands 15 default group tacacs+ local none
+
+aaa accounting exec default start-stop group tacacs+
+aaa accounting commands 0 default start-stop group tacacs+
+aaa accounting commands 15 default start-stop group tacacs+
+
+
+ip domain-name <some.domain.name>
+crypto key generate rsa – This will prompt the user for the key size, set this to a number larger than 1024
+line vty 0 15
+transport input ssh
+
+
+! для тестирования ASA
+! при стандартных настройках требуется вводить пароль для enable !!!
+conf t
+int e0
+nameif inside
+ip add 192.168.1.202 255.255.255.0
+no shut
+end
+
+conf t
+username cisco password cisco privilege 15
+crypto key generate rsa modulus 2048
+ssh 192.168.0.0 255.255.255.0 inside
+
+conf t
+aaa-server tacgui protocol tacacs+
+aaa-server tacgui (inside) host 192.168.1.110
+key test123
+exit
+aaa authentication serial console LOCAL
+aaa authentication ssh console tacgui LOCAL
+aaa authentication enable console tacgui LOCAL
+
+aaa authorization exec authentication-server
+aaa authorization exec authentication-server auto-enable
+aaa authorization command tacgui LOCAL
+
+aaa accounting command tacgui
+
+! test
+ssh -oKexAlgorithms=+diffie-hellman-group1-sha1 LAB\user1@192.168.1.202
+
+
+========
+Альтернативный tacacs
+https://www.pro-bono-publico.de/projects/tac_plus.html
+
+apt update && apt upgrade -y
+apt install -y perl build-essential libnet-ldap-perl libnet-ssleay-perl libauthen-pam-perl libpam-runtime libio-pty-perl libbind-dev libssl-dev libpcre3-dev libpcre++-dev libfreeradius-dev zlib1g-dev libgcrypt20-dev libcurl4-openssl-dev libpam0g-dev libsctp-dev libevent-dev
+cd ~
+wget https://www.pro-bono-publico.de/projects/src/DEVEL.202101101505.tar.bz2
+bzip2 -dc DEVEL.202101101505.tar.bz2 | tar xvfp -
+
+cd PROJECTS
+./configure --help
+./configure tac_plus --with-pcre
+make clean
+make
+make install
+
+mkdir /var/log/tac_plus
+
+cd /usr/local/etc
+touch tac_plus.cfg
+chmod 755 tac_plus.cfg
+
+! шифрованные пароли
+openssl passwd -1 <clear_text_password>
+openssl passwd -crypt
+
+
+! запуск для теста
+/usr/local/sbin/tac_plus -P /usr/local/etc/tac_plus.cfg
+/usr/local/bin/mavistest -d -1 /usr/local/etc/tac_plus.cfg tac_plus TACPLUS SomeUserName SomeUserPassword
+
+
+cd /etc/init.d
+cp ~/PROJECTS/tac_plus/extra/etc_init.d_tac_plus /etc/init.d/tac_plus
+chmod 755 /etc/init.d/tac_plus
+chown root:root /etc/init.d/tac_plus
+update-rc.d tac_plus defaults
+service tac_plus start
+service tac_plus restart
+
+netstat -tulpen
+
+service tac_plus stop
+service tac_plus start
+
+systemctl status tac_plus.service
+journalctl -xe
+
+===
+! PAM
+vi /usr/local/etc/tac_plus.cfg
+---
+#!/usr/local/sbin/tac_plus
+id = spawnd {
+    listen = { port = 49 }
+}
+
+id = tac_plus {
+  access log = /var/log/tac_plus/access.log
+  accounting log = /var/log/tac_plus/commands.log
+
+  mavis module = groups {
+    resolve gids = yes
+    groups filter = /^(guest|admin)$/
+    script out = {
+      # copy the already filtered UNIX group access list to TACMEMBER
+      eval $GIDS =~ /^(.*)$/
+      set $TACMEMBER = $1
+    }
+  }
+  mavis module = external {
+    exec = /usr/local/sbin/pammavis pammavis -s sshd
+  }
+  user backend = mavis
+  login backend = mavis
+
+host = global
+        {
+         welcome banner = "\nWe are watching you! We know your ip: %%c\n"
+         failed authentication banner ="\nYou are the %%u?\n"
+         motd banner = "\nHello %%u. Today is %A!"
+         key = test123 ## Мегапароль
+         address = 0.0.0.0/0
+        }
+
+group = admin 
+{
+    enable = login
+    service = shell {
+      default command = permit
+      set priv-lvl = 15
+    }  
+}
+
+group = guest
+{
+    service = shell {
+      default command = deny
+      set priv-lvl = 15
+      cmd = show { permit .* }
+    }
+}
+
+user = user1
+  {
+    member = admin
+  }
+}
+
+====================
+! локальная база данных
+vi /usr/local/etc/tac_plus.cfg
+---
+#!/usr/local/sbin/tac_plus
+id = spawnd {
+    listen = { port = 49 }
+    # see the spawnd configuration guide for further configuration options
+}
+id = tac_plus
+        {
+         accounting log = /var/log/tacacs/tac_plus.log  ## Сюда складываем логи (кто, что, где и когда делал), неплохо бы задать права 600 и настроить logrotate
+         mavis module = external ##Подключаем mavis модуль (подробнее можно прочитать в документации). К слову, можно подключить другой модуль и использовать ldap.
+                {
+                 exec = /usr/local/lib//mavis/mavis_tacplus_passwd.pl 
+                }
+login backend = mavis
+
+### Выставляю идентичный баннер для всех хостов
+host = world 
+        {
+         welcome banner = "\nWe are watching you! We know your ip: %%c\n"
+         failed authentication banner ="\nYou are the %%u?\n"
+         motd banner = "\nHello %%u. Today is %A!"
+         key = test123 ## Мегапароль
+         address = 0.0.0.0/0
+        }
+
+### Создаю две группы юзеров - админы и... неадмины
+#Полный доступ
+group = admin 
+{
+    default service = permit
+    service = exec { set priv-lvl = 15 }
+    service = junos-exec { set local-user-name = remote-super-users } #Классы для juniper, читаем ниже
+}
+
+#Доступ только к определенным командам
+group = noob 
+{
+    default service = deny
+     service = exec { set priv-lvl = 15 }
+     service = junos-exec { set local-user-name = remote-read-only } 
+     service = shell 
+     {
+      cmd = show { permit .* }
+      cmd = ping { permit .* }
+      cmd = traceroute { permit .* }
+     }
+}
+
+### ACL тут здорово отличаются от того, что было в обычном tacacs+. В данном случае, сей ACL разрешает пользователю доступ только к устройству  192.168.0.5. На всех прочих мы получим bad password. 
+acl = noobilo 
+   {
+    nas = 192.168.0.5
+   }
+
+### Создаем пользователей
+  user = user1
+  {
+    member = admin
+    login = crypt gP2U.eidKbB0Q
+        service = shell 
+        {
+        set priv-lvl = 15
+        }
+  }
+}
+
+=====================
+! LDAP
+ #!/usr/local/sbin/tac_plus
+ id = spawnd {
+    listen = { address = 0.0.0.0 port = 49 }
+    #Uncomment the line below for IPv6 support
+    #listen = { address = :: port = 49 }
+    spawn = {
+            instances min = 1
+            instances max = 10
+    }
+    background = yes
+ }
+
+ id = tac_plus {
+    access log = /var/log/tac_plus/access/%Y/%m/access-%m-%d-%Y.txt
+    accounting log = /var/log/tac_plus/accounting/%Y/%m/accounting-%m-%d-%Y.txt
+    authentication log = /var/log/tac_plus/authentication/%Y/%m/authentication-%m-%d-%Y.txt
+
+    mavis module = external {
+            setenv LDAP_SERVER_TYPE = "microsoft"
+            #If you are using Microsoft Global Catalog with secure LDAP (SSL)
+            #setenv LDAP_HOSTS = "ldaps://10.0.0.100:3269"
+            #If you are using Microsoft Global Catalog with regular LDAP (non-SSL)
+            setenv LDAP_HOSTS = "10.0.0.100:3268"
+            setenv LDAP_BASE = "DC=domain,DC=name"
+            setenv LDAP_SCOPE = sub
+            setenv LDAP_FILTER = "(&(objectClass=user)(objectClass=person)(sAMAccountName=%s))"
+            setenv LDAP_USER = "svc_tacplus@domain.name"
+            setenv LDAP_PASSWD = "ServiceAccountPassword"
+            #Setting UNLIMIT_AD_GROUP_MEMBERSHIP to 0 will cause a NACK response if the AD account is a member of more than one security group
+            setenv UNLIMIT_AD_GROUP_MEMBERSHIP = 1
+            #I'm not 100% sure what EXPAND_AD_GROUP_MEMBERSHIP does
+            setenv EXPAND_AD_GROUP_MEMBERSHIP = 0
+            #Clear default setting of tacplus for AD_GROUP_PREFIX
+            setenv AD_GROUP_PREFIX = ""
+            #Setting REQUIRE_TACACS_GROUP_PREFIX to 1 will cause a NACK response if the AD account is not a member of a security group with the required prefix
+            setenv REQUIRE_TACACS_GROUP_PREFIX = 0
+            #DO NOT SET THE USE_TLS ENVIRONMENT VARIABLE
+            #TLS WILL AUTOMATICALLY BE ENABLED IF NEEDED
+            #FORCING THIS VARIABLE TO 1 WILL BREAK MAVIS IF TLS IS NEEDED
+            #setenv USE_TLS = 0
+            exec = /usr/local/lib/mavis/mavis_tacplus_ldap.pl
+    }
+
+    login backend = mavis
+    user backend = mavis
+    pap backend = mavis
+
+    host = world {
+            #Allow any IPv4 device
+            address = 0.0.0.0/0
+
+            #Uncomment the line below for IPv6 support
+            #address = ::/0
+
+            #Uncomment the line below to inject a login prompt
+            #prompt = "Put your custom welcome message here.\n"
+
+            #Change this to your own secure TACACS+ key
+            key = "cisco"
+    }
+
+    #Example group that grants admin on Cisco IOS/XE/XR and NX-OS
+    group = admin {
+            #Permit all services by default
+            default service = permit
+
+            #Users will need to re-enter their AD password for the enable password (feel free to customize this however you want)
+            enable = login
+
+            service = shell {
+                    #Permit all commands
+                    default command = permit
+
+                    #Permit all command attributes
+                    default attribute = permit
+
+                    #Set privilege level to 15 on IOS/XE
+                    set priv-lvl = 15
+
+                    #Uncomment the line below for NX-OS support
+                    #set shell:roles="\"network-admin vdc-admin\""
+
+                    #Uncomment the line below for IOS XR support
+                    #set task = "#root-system"
+            }
+
+
+    }
+
+    #Example AD user mapping
+    user = jsmith {
+            password = mavis
+            member = admin
+    }
+ }
+
+====================
+!PAM
+id = spawnd { listen = { port = 49 } }
+
+id = tac_plus {
+  mavis module = groups {
+    resolve gids = yes
+    groups filter = /^(guest|staff)$/
+    script out = {
+      # copy the already filtered UNIX group access list to TACMEMBER
+      eval $GIDS =~ /^(.*)$/
+      set $TACMEMBER = $1
+    }
+  }
+  mavis module = external {
+    exec = /usr/local/sbin/pammavis pammavis -s sshd
+  }
+  user backend = mavis
+  login backend = mavis
+  host = global { address = 0.0.0.0/0 key = cisco }
+
+  group = staff {
+    service = shell {
+      default command = permit
+      set priv-lvl = 15
+    }
+  }
+  group = guest {
+    service = shell {
+      default command = deny
+      set priv-lvl = 15
+      cmd = show { permit .* }
+    }
+  }
+}
+tacacs-server host 192.168.1.110
+tacacs-server key test123
+
+aaa new-model
+
+tacacs server sv1
+
+
+aaa group server tacacs+ tacacs1
+ server 192.168.1.110
+aaa group server tacacs+ tacacs2
+ server 192.168.1.109
+
+
+tacacs-server 192.168.1.110 key test123
+tacacs-server 192.168.1.109 key test123
+
+
+aaa authentication login default group tacacs1 group tacacs2 local
+aaa authentication enable default enable
+aaa authorization console
+aaa authorization exec default group tacacs1 group tacacs2 local 
+aaa authorization commands 15 default group tacacs1 group tacacs2 local 
+aaa accounting delay-start
+aaa accounting exec default start-stop broadcast group tacacs1 group tacacs2
+aaa accounting commands 0 default start-stop broadcast group tacacs1 group tacacs2
+aaa accounting commands 1 default start-stop broadcast group tacacs1 group tacacs2
+aaa accounting commands 15 default start-stop broadcast group tacacs1 group tacacs2
+
+
+===
+/usr/include/sys
+ uname -m -
+/usr/include/x86_64-linux-gnu/sys
+
+poll.h
+select.h
+event.h
+epoll.h
+
+sudo cp /usr/include/poll.h /usr/include/sys/
+
+sudo apt install libz-dev libssl-dev libcurl4-gnutls-dev libexpat1-dev gettext cmake gcc curl
